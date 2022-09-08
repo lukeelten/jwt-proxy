@@ -84,7 +84,7 @@ func (proxy *Proxy) Run() error {
 
 			tokenValue = strings.TrimSpace(tokenValue)
 
-			err := jwtValidator.Validate(tokenValue)
+			_, err := jwtValidator.Validate(tokenValue)
 			if err != nil {
 				log.Printf("Failed token validation: %v", err)
 				unauthenticated(response)

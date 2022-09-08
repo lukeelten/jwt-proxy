@@ -38,6 +38,13 @@ type JWTValidator struct {
 	jwksUrl   string
 }
 
+type TeleportClaims struct {
+	jwt.RegisteredClaims
+
+	Username string   `json:"username,omitempty"`
+	Roles    []string `json:"roles,omitempty"`
+}
+
 func NewJWTValidator(jwksUrl string) *JWTValidator {
 	if !strings.HasSuffix(jwksUrl, ".json") {
 		jwksUrl += "/.well-known/jwks.json"
@@ -68,18 +75,21 @@ func (jva *JWTValidator) refreshKey() {
 	jva.publicKey.Store(key)
 }
 
-func (jva *JWTValidator) Validate(tokenString string) error {
+func (jva *JWTValidator) Validate(tokenString string) (TeleportClaims, error) {
 	keyFunc := func(token *jwt.Token) (interface{}, error) {
 		return jva.publicKey.Load(), nil
 	}
 
-	var claims jwt.StandardClaims
+	var claims TeleportClaims
 	_, err := jwt.ParseWithClaims(tokenString, &claims, keyFunc)
 	if err != nil {
-		return err
+		return claims, err
 	}
 
-	return claims.Valid()
+	// expires at is a required field
+	claims.VerifyExpiresAt(jwt.TimeFunc(), true)
+
+	return claims, claims.Valid()
 }
 
 // jwk is a JSON Web Key, described in detail in RFC 7517.
