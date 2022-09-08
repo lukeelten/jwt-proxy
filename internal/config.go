@@ -25,10 +25,19 @@ type ProxyConfig struct {
 }
 
 func LoadConfig() *ProxyConfig {
+	var config ProxyConfig
+
 	configFile := configFileName()
 
-	var config ProxyConfig
-	err := cleanenv.ReadConfig(configFile, &config)
+	_, err := os.Stat(configFile)
+	if err != nil {
+		log.Print("Load Config from Enviroment")
+		err = cleanenv.ReadEnv(&config)
+	} else {
+		log.Printf("Load Config from File: %s", configFile)
+		err = cleanenv.ReadConfig(configFile, &config)
+	}
+
 	if err != nil {
 		log.Fatal(err)
 	}
