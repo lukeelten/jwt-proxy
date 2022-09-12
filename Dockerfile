@@ -7,6 +7,7 @@ COPY . .
 RUN go build -o jwt-proxy -ldflags="-s -w" ./cmd/jwt-proxy
 
 FROM registry.access.redhat.com/ubi9-minimal
+LABEL maintainer="Tobias Derksen<t.derksen@mailbox.org>"
 
 ENV TZ=Europe/Berlin
 

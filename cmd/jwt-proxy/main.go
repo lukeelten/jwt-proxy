@@ -1,9 +1,9 @@
 package main
 
 import (
-	"log"
-
 	"github.com/lukeelten/jwt-proxy/internal"
+	"go.uber.org/zap"
+	"log"
 )
 
 func main() {
@@ -13,9 +13,19 @@ func main() {
 		log.Fatal(err)
 	}
 
-	proxy, err := internal.NewProxy(config)
+	var logger *zap.Logger
+	if config.Debug {
+		logger, _ = zap.NewDevelopment()
+	} else {
+		logger, _ = zap.NewProduction()
+	}
+	defer logger.Sync()
+
+	logger.Sugar().Debugw("Read Config", "config", config)
+
+	proxy, err := internal.NewProxy(config, logger.Sugar())
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal(err.Error())
 	}
 
 	proxy.Run()

@@ -21,21 +21,21 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
+	"go.uber.org/zap"
 	"math/big"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v4"
 )
 
-const JWKS_TTL = 15 * time.Minute
-
 type JWTValidator struct {
-	publicKey atomic.Value
-	jwksUrl   string
+	Logger          *zap.SugaredLogger
+	publicKey       atomic.Value
+	jwksUrl         string
+	insecure        bool
+	shutdownChannel chan bool
 }
 
 type TeleportClaims struct {
@@ -45,37 +45,52 @@ type TeleportClaims struct {
 	Roles    []string `json:"roles,omitempty"`
 }
 
-func NewJWTValidator(jwksUrl string) *JWTValidator {
-	if !strings.HasSuffix(jwksUrl, ".json") {
-		jwksUrl += "/.well-known/jwks.json"
-	}
-
+func NewJWTValidator(config TeleportConfig) *JWTValidator {
 	jva := &JWTValidator{
-		jwksUrl: jwksUrl,
+		jwksUrl:         config.getJwksUrl(),
+		insecure:        config.Insecure,
+		shutdownChannel: make(chan bool, 1),
 	}
 
+	// Initially load the keys
 	jva.refreshKey()
 
+	// Start thread which refreshes the key every interval
 	go func() {
 		for {
-			<-time.After(JWKS_TTL)
-			jva.refreshKey()
+			select {
+			case <-jva.shutdownChannel:
+				// exit go routine on shutdown
+				return
+
+			case <-time.After(config.RefreshInternal):
+				// Reload keys after time period
+				jva.refreshKey()
+			}
 		}
 	}()
 
 	return jva
 }
 
+func (jva *JWTValidator) Shutdown() {
+	jva.shutdownChannel <- true
+}
+
 func (jva *JWTValidator) refreshKey() {
-	key, err := getPublicKey(jva.jwksUrl, false)
+	jva.Logger.Info("Loading JWKS Key")
+
+	key, err := getPublicKey(jva.jwksUrl, jva.insecure)
 	if err != nil {
-		log.Fatal(err)
+		jva.Logger.Fatalw("cannot read public keys", "err", err, "url", jva.jwksUrl, "insecure", jva.insecure)
 	}
+
+	jva.Logger.Debugw("Got key", "key", key)
 
 	jva.publicKey.Store(key)
 }
 
-func (jva *JWTValidator) Validate(tokenString string) (TeleportClaims, error) {
+func (jva *JWTValidator) Validate(tokenString string) (*TeleportClaims, error) {
 	keyFunc := func(token *jwt.Token) (interface{}, error) {
 		return jva.publicKey.Load(), nil
 	}
@@ -83,13 +98,10 @@ func (jva *JWTValidator) Validate(tokenString string) (TeleportClaims, error) {
 	var claims TeleportClaims
 	_, err := jwt.ParseWithClaims(tokenString, &claims, keyFunc)
 	if err != nil {
-		return claims, err
+		return nil, err
 	}
 
-	// expires at is a required field
-	claims.VerifyExpiresAt(jwt.TimeFunc(), true)
-
-	return claims, claims.Valid()
+	return &claims, claims.Valid()
 }
 
 // jwk is a JSON Web Key, described in detail in RFC 7517.
@@ -122,6 +134,7 @@ type claims struct {
 	Roles []string `json:"roles"`
 }
 
+// @todo support for multiple keys
 // getPublicKey fetches the public key from the JWK endpoint.
 func getPublicKey(url string, insecureSkipVerify bool) (*rsa.PublicKey, error) {
 	// Fetch JWKs.

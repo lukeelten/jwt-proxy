@@ -2,9 +2,7 @@ package internal
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -13,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 
+	"go.uber.org/zap"
 	"strings"
 )
 
@@ -22,140 +21,93 @@ const (
 	HEADER_FORWARDED_PROTO = "X-Forwarded-Proto"
 )
 
-func getModernTLSConfig() *tls.Config {
-	return &tls.Config{
-		MinVersion: tls.VersionTLS13,
-	}
-}
-
-func getIntermediateTLSConfig() *tls.Config {
-	return &tls.Config{
-		MinVersion:               tls.VersionTLS12,
-		CurvePreferences:         []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
-		PreferServerCipherSuites: true,
-		CipherSuites: []uint16{
-			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-			tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
-		},
-	}
-}
-
 type Proxy struct {
+	http.Handler
+
+	Logger *zap.SugaredLogger
 	Config *ProxyConfig
 
-	HttpServer  *http.Server
-	HttpsServer *http.Server
-	Target      *url.URL
+	validator     *JWTValidator
+	HttpServer    *http.Server
+	HttpsServer   *http.Server
+	Target        *url.URL
+	MetricsServer *MetricsServer
 
-	handleFunc http.HandlerFunc
+	reverseProxy *httputil.ReverseProxy
 }
 
-func NewProxy(config *ProxyConfig) (*Proxy, error) {
-	proxy := &Proxy{
-		Config: config,
-	}
-
-	target, err := url.Parse(proxy.Config.Upstream)
+func NewProxy(config *ProxyConfig, logger *zap.SugaredLogger) (*Proxy, error) {
+	target, err := url.Parse(config.Upstream)
 	if err != nil {
+		logger.Errorw("invalid upstream url", "url", config.Upstream)
 		return nil, err
 	}
 
-	proxy.Target = target
+	proxy := &Proxy{
+		Config:        config,
+		Logger:        logger,
+		validator:     NewJWTValidator(config.Teleport),
+		reverseProxy:  httputil.NewSingleHostReverseProxy(target),
+		Target:        target,
+		HttpServer:    nil,
+		HttpsServer:   nil,
+		MetricsServer: nil,
+	}
 
 	return proxy, nil
 }
 
-func unauthenticated(resp http.ResponseWriter) {
-	resp.WriteHeader(http.StatusUnauthorized)
-	resp.Write([]byte("Unauthorized"))
-}
-
-func (proxy *Proxy) Run() error {
-	reverseProxy := httputil.NewSingleHostReverseProxy(proxy.Target)
-	jwtValidator := NewJWTValidator(proxy.Config.JwksUri)
-
-	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		tokenValue := request.Header.Get(proxy.Config.TokenHeader)
-		if len(tokenValue) > 0 {
-			if strings.HasPrefix(tokenValue, "Bearer ") {
-				tokenValue = strings.TrimPrefix(tokenValue, "Bearer ")
-			}
-
-			tokenValue = strings.TrimSpace(tokenValue)
-
-			_, err := jwtValidator.Validate(tokenValue)
-			if err != nil {
-				log.Printf("Failed token validation: %v", err)
-				unauthenticated(response)
-				return
-			}
-		} else {
-			unauthenticated(response)
-			return
-		}
-
-		if !proxy.Config.PassToken {
-			request.Header.Del(proxy.Config.TokenHeader)
-		}
-
-		forwardedFor := request.Header.Get(HEADER_FORWARDED_FOR)
-		if len(forwardedFor) == 0 {
-			request.Header.Set(HEADER_FORWARDED_FOR, request.RemoteAddr)
-		}
-
-		forwardedProto := request.Header.Get(HEADER_FORWARDED_PROTO)
-		if len(forwardedProto) == 0 {
-			request.Header.Set(HEADER_FORWARDED_PROTO, "https")
-		}
-
-		forwardedHost := request.Header.Get(HEADER_FORWARDED_HOST)
-		if len(forwardedHost) == 0 {
-			request.Header.Set(HEADER_FORWARDED_HOST, request.Host)
-		}
-
-		reverseProxy.ServeHTTP(response, request)
-	})
-
+func (proxy *Proxy) Run() {
 	var wg sync.WaitGroup
-	if proxy.Config.HttpPort > 0 {
-		listenAddrHttp := fmt.Sprintf("0.0.0.0:%v", proxy.Config.HttpPort)
+	if len(proxy.Config.Server.ListenHttp) > 0 {
 		proxy.HttpServer = &http.Server{
-			Addr:    listenAddrHttp,
-			Handler: handler,
+			Addr:    proxy.Config.Server.ListenHttp,
+			Handler: proxy,
 		}
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			log.Printf("Starting HTTP Server on: %s", listenAddrHttp)
+			proxy.Logger.Infof("Starting HTTP Server on: %s", proxy.Config.Server.ListenHttp)
 			err := proxy.HttpServer.ListenAndServe()
 			if err != http.ErrServerClosed {
-				log.Printf("HTTP Server error: %v", err)
+				proxy.Logger.Errorf("HTTP Server error: %v", err)
 			}
 		}()
 	}
 
-	if proxy.Config.HttpsPort > 0 {
+	if len(proxy.Config.Server.ListenHttps) > 0 {
 		tlsConfig, err := proxy.makeTlsConfig()
 		if err != nil {
-			return err
+			proxy.Logger.Fatalw("Cannot build required TLS Config", "err", err)
 		}
 
-		listenAddrHttps := fmt.Sprintf("0.0.0.0:%v", proxy.Config.HttpsPort)
 		proxy.HttpsServer = &http.Server{
-			Addr:      listenAddrHttps,
-			Handler:   handler,
+			Addr:      proxy.Config.Server.ListenHttps,
+			Handler:   proxy,
 			TLSConfig: tlsConfig,
 		}
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			log.Printf("Starting HTTPS Server on: %s", listenAddrHttps)
+			proxy.Logger.Infof("Starting HTTPS Server on: %s", proxy.Config.Server.ListenHttp)
 			err := proxy.HttpsServer.ListenAndServeTLS("", "")
 			if err != http.ErrServerClosed {
-				log.Printf("HTTPS Server error: %v", err)
+				proxy.Logger.Errorf("HTTPS Server error: %v", err)
+			}
+		}()
+	}
+
+	if proxy.Config.Metrics.Enabled {
+		proxy.MetricsServer = NewMetricsServer(proxy.Config.Metrics, proxy.Logger)
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := proxy.MetricsServer.Start()
+			if err != http.ErrServerClosed {
+				proxy.Logger.Errorf("Metrics Server error: %v", err)
 			}
 		}()
 	}
@@ -164,40 +116,127 @@ func (proxy *Proxy) Run() error {
 	signal.Notify(exitChannel, syscall.SIGKILL, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	go func() {
 		<-exitChannel
+		// This will ensure that the main function is not returned until all shutdown sequences has been finished.
+		// It is necessary because ListenAndServe will terminate immediately after shutdown call, but the connections may not have been terminated.
+		wg.Add(1)
+		defer wg.Done()
 
-		if proxy.Config.HttpPort > 0 {
-			proxy.HttpServer.Shutdown(context.Background())
+		proxy.validator.Shutdown()
+
+		if proxy.HttpServer != nil {
+			err := proxy.HttpServer.Shutdown(context.Background())
+			if err != nil && err != http.ErrServerClosed {
+				proxy.Logger.Errorw("Got error during HTTP server shutdown", "error", err)
+			}
 		}
 
-		if proxy.Config.HttpsPort > 0 {
-			proxy.HttpsServer.Shutdown(context.Background())
+		if proxy.HttpsServer != nil {
+			err := proxy.HttpsServer.Shutdown(context.Background())
+			if err != nil && err != http.ErrServerClosed {
+				proxy.Logger.Errorw("Got error during HTTPS server shutdown", "error", err)
+			}
+		}
+
+		if proxy.MetricsServer != nil {
+			err := proxy.MetricsServer.Shutdown()
+			if err != nil && err != http.ErrServerClosed {
+				proxy.Logger.Errorw("Got error during metrics server shutdown", "error", err)
+			}
 		}
 	}()
 
 	wg.Wait()
-	return http.ErrServerClosed
 }
 
-func (proxy *Proxy) makeTlsConfig() (*tls.Config, error) {
-	certificates := make([]tls.Certificate, 0)
+func (proxy *Proxy) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	if proxy.MetricsServer != nil {
+		proxy.MetricsServer.CountRequest(request)
+		timer := proxy.MetricsServer.StartRequestTimer(request)
+		defer func() {
+			dur := timer.ObserveDuration()
+			proxy.Logger.Debugw("Request completed", "duration", dur, "request", request)
+		}()
+	}
 
-	if proxy.Config.HttpsPort > 0 {
-		cert, err := tls.LoadX509KeyPair(proxy.Config.CertFile, proxy.Config.KeyFile)
-		if err == nil {
-			return nil, err
+	tokenValue := request.Header.Get(proxy.Config.Teleport.TokenHeader)
+	proxy.Logger.Debugw("got request", "token", tokenValue, "uri", request.RequestURI, "method", request.Method)
+
+	claims, err := ValidateRequest(proxy.validator, tokenValue)
+	if err != nil {
+		proxy.Logger.Errorw("got invalid token", "err", err)
+		proxy.Unauthenticated(request, response, err)
+		return
+	}
+
+	proxy.Logger.Debugw("successfully validated token", "claims", claims)
+	err = CheckAllowedUsernames(&proxy.Config.AccessControl, claims)
+	if err != nil {
+		proxy.Logger.Errorw("username not allowed", "err", err, "username", claims.Username)
+		proxy.Unauthenticated(request, response, err)
+		return
+	}
+
+	err = CheckAllowedRoles(&proxy.Config.AccessControl, claims)
+	if err != nil {
+		proxy.Logger.Errorw("role not allowed", "err", err, "roles", claims.Roles)
+		proxy.Unauthenticated(request, response, err)
+		return
+	}
+
+	// append additional header
+	for _, header := range proxy.Config.AdditionalHeaders {
+		if len(header.Name) == 0 {
+			continue
 		}
 
-		certificates = append(certificates, cert)
+		if len(header.Value) == 0 {
+			request.Header.Del(header.Name)
+		} else {
+			request.Header.Set(header.Name, header.Value)
+		}
 	}
 
-	var config *tls.Config
-	if strings.Compare(proxy.Config.TlsProfile, "modern") == 0 {
-		config = getModernTLSConfig()
-	} else {
-		config = getIntermediateTLSConfig()
+	// Pass Token to Upstream
+	if !proxy.Config.Token.PassToken {
+		request.Header.Del(proxy.Config.Teleport.TokenHeader)
 	}
 
-	config.Certificates = certificates
+	// Pass Token as Authorization Bearer
+	if proxy.Config.Token.PassAsBearer {
+		request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", tokenValue))
+	}
 
-	return config, nil
+	// Pass Token as custom header
+	if len(proxy.Config.Token.PassTokenAsHeader) > 0 {
+		request.Header.Set(proxy.Config.Token.PassTokenAsHeader, fmt.Sprintf("Bearer %s", tokenValue))
+	}
+
+	// Pass username as custom header
+	if len(proxy.Config.Token.UsernameHeader) > 0 {
+		request.Header.Set(proxy.Config.Token.UsernameHeader, claims.Username)
+	}
+
+	// Pass roles as custom header
+	if len(proxy.Config.Token.RolesHeader) > 0 {
+		request.Header.Set(proxy.Config.Token.RolesHeader, strings.Join(claims.Roles, ", "))
+	}
+
+	if proxy.Config.Server.AppendProxyHeaders {
+		forwardedFor := request.Header.Get(HEADER_FORWARDED_FOR)
+		if len(forwardedFor) == 0 {
+			request.Header.Set(HEADER_FORWARDED_FOR, request.RemoteAddr)
+		}
+
+		forwardedProto := request.Header.Get(HEADER_FORWARDED_PROTO)
+		if len(forwardedProto) == 0 {
+			request.Header.Set(HEADER_FORWARDED_PROTO, strings.ToLower(request.URL.Scheme))
+		}
+
+		forwardedHost := request.Header.Get(HEADER_FORWARDED_HOST)
+		if len(forwardedHost) == 0 {
+			request.Header.Set(HEADER_FORWARDED_HOST, request.Host)
+		}
+	}
+
+	proxy.reverseProxy.ServeHTTP(response, request)
 }
