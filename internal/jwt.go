@@ -45,11 +45,12 @@ type TeleportClaims struct {
 	Roles    []string `json:"roles,omitempty"`
 }
 
-func NewJWTValidator(config TeleportConfig) *JWTValidator {
+func NewJWTValidator(config TeleportConfig, logger *zap.SugaredLogger) *JWTValidator {
 	jva := &JWTValidator{
 		jwksUrl:         config.getJwksUrl(),
 		insecure:        config.Insecure,
 		shutdownChannel: make(chan bool, 1),
+		Logger:          logger,
 	}
 
 	// Initially load the keys
@@ -78,7 +79,7 @@ func (jva *JWTValidator) Shutdown() {
 }
 
 func (jva *JWTValidator) refreshKey() {
-	jva.Logger.Info("Loading JWKS Key")
+	jva.Logger.Info("Loading JWKS Key", "url", jva.jwksUrl, "insecure", jva.insecure)
 
 	key, err := getPublicKey(jva.jwksUrl, jva.insecure)
 	if err != nil {

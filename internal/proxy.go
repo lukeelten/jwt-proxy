@@ -46,7 +46,7 @@ func NewProxy(config *ProxyConfig, logger *zap.SugaredLogger) (*Proxy, error) {
 	proxy := &Proxy{
 		Config:        config,
 		Logger:        logger,
-		validator:     NewJWTValidator(config.Teleport),
+		validator:     NewJWTValidator(config.Teleport, logger),
 		reverseProxy:  httputil.NewSingleHostReverseProxy(target),
 		Target:        target,
 		HttpServer:    nil,
