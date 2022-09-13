@@ -9,6 +9,10 @@ import (
 	"strings"
 )
 
+const (
+	HEALTH_ENDPOINT = "/health"
+)
+
 type MetricsServer struct {
 	Config MetricsConfig
 	Logger *zap.SugaredLogger
@@ -29,6 +33,15 @@ func NewMetricsServer(config MetricsConfig, logger *zap.SugaredLogger) *MetricsS
 	server := &http.Server{
 		Addr:    config.ListenAddr,
 		Handler: serveMux,
+	}
+
+	if len(config.HealthEndpoint) > 0 {
+		logger.Debugw("enable health endpoint")
+		serveMux.HandleFunc(config.HealthEndpoint, func(writer http.ResponseWriter, request *http.Request) {
+			logger.Debug("Healthcheck called")
+			writer.WriteHeader(http.StatusOK)
+			writer.Write([]byte("ok"))
+		})
 	}
 
 	return &MetricsServer{

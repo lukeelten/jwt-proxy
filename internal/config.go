@@ -40,7 +40,7 @@ type ServerConfig struct {
 }
 
 type TeleportConfig struct {
-	ProxyAddr        string        `yaml:"proxyAddr" env:"TELEPORT_HOST" env-required`
+	ProxyAddr        string        `yaml:"proxyAddr" env:"TELEPORT_HOST" env-required:""`
 	Insecure         bool          `yaml:"insecure" env:"TELEPORT_INSECURE" env-default:"false"`
 	OverrideJwksPath string        `yaml:"overrideJwksPath" env:"TELEPORT_JWKS_PATH" env-default:""`
 	TokenHeader      string        `yaml:"tokenHeader" env:"TELEPORT_TOKEN_HEADER" env-default:"Teleport-Jwt-Assertion"`
@@ -61,9 +61,10 @@ type TokenConfig struct {
 }
 
 type MetricsConfig struct {
-	Enabled    bool   `yaml:"enabled" env:"METRICS_ENABLED" env-default:"true"`
-	ListenAddr string `yaml:"listenAddr" env:"METRICS_LISTEN_ADDR" env-default:"0.0.0.0:9090"`
-	Endpoint   string `yaml:"endpoint" env:"METRICS_ENDPOINT" env-default:"/metrics"`
+	Enabled        bool   `yaml:"enabled" env:"METRICS_ENABLED" env-default:"true"`
+	ListenAddr     string `yaml:"listenAddr" env:"METRICS_LISTEN_ADDR" env-default:"0.0.0.0:9090"`
+	Endpoint       string `yaml:"endpoint" env:"METRICS_ENDPOINT" env-default:"/metrics"`
+	HealthEndpoint string `yaml:"healthEndpoint" env:"HEALTH_ENDPOINT" env-default:"/health"`
 }
 
 type Header struct {
