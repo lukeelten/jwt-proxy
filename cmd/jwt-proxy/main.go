@@ -16,6 +16,7 @@ func main() {
 	var logger *zap.Logger
 	if config.Debug {
 		logger, _ = zap.NewDevelopment()
+		logger.Info("Enable Debug Mode")
 	} else {
 		logger, _ = zap.NewProduction()
 	}

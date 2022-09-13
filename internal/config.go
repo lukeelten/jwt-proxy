@@ -29,8 +29,8 @@ type ProxyConfig struct {
 
 type ServerConfig struct {
 	RequireTls bool   `yaml:"requireTls" env:"REQUIRE_TLS" env-default:"false"`
-	KeyFile    string `yaml:"keyfile" env:"KEY_FILE" env-default:"/cert/tls.key"`
-	CertFile   string `yaml:"certfile" env:"CERT_FILE" env-default:"/cert/tls.crt"`
+	KeyFile    string `yaml:"keyFile" env:"KEY_FILE" env-default:"/cert/tls.key"`
+	CertFile   string `yaml:"certFile" env:"CERT_FILE" env-default:"/cert/tls.crt"`
 
 	ListenHttp  string `yaml:"listenHttp" env:"LISTEN_HTTP" env-default:"0.0.0.0:8081"`
 	ListenHttps string `yaml:"listenHttps" env:"LISTEN_HTTPS" env-default:"0.0.0.0:8444"`

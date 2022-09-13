@@ -1,74 +1,73 @@
 package internal
 
 import (
+	"context"
 	"errors"
+	"github.com/lestrrat-go/jwx/v2/jwt"
 	"strings"
 )
 
-var (
-	ERR_TOKEN_EMPTY          = errors.New("missing token")
-	ERR_TOKEN_INVALID        = errors.New("token invalid")
-	ERR_USERNAME_NOT_ALLOWED = errors.New("user not allowed")
-	ERR_ROLE_NOT_ALLOWED     = errors.New("role not allowed")
+const (
+	USERNAME_CLAIM = "username"
+	ROLES_CLAIM    = "roles"
 )
 
-func CheckAllowedUsernames(acl *AccessControl, claims *TeleportClaims) error {
-	if len(acl.AllowedUsers) > 0 {
-		for _, username := range acl.AllowedUsers {
-			if strings.Compare(username, claims.Username) == 0 {
-				return nil
-			}
-		}
-
-		return ERR_USERNAME_NOT_ALLOWED
-	}
-
-	return nil
+type allowedUsernameValidator struct {
+	jwt.Validator
+	config AccessControl
 }
 
-func CheckAllowedRoles(acl *AccessControl, claims *TeleportClaims) error {
-	if len(acl.AllowedRoles) > 0 {
-		if len(claims.Roles) == 0 {
-			return errors.New("role not allowed")
-		}
+func WithAllowedUsernames(acl AccessControl) jwt.ValidateOption {
+	return jwt.WithValidator(&allowedUsernameValidator{config: acl})
+}
 
-		for _, allowedRole := range acl.AllowedRoles {
-			for _, role := range claims.Roles {
-				if strings.Compare(allowedRole, role) == 0 {
+func (validator *allowedUsernameValidator) Validate(ctx context.Context, token jwt.Token) jwt.ValidationError {
+	if len(validator.config.AllowedUsers) == 0 {
+		return nil
+	}
+
+	if usernameClaim, exists := token.Get(USERNAME_CLAIM); exists {
+		if username, ok := usernameClaim.(string); ok {
+			for _, allowedUsername := range validator.config.AllowedUsers {
+				if strings.Compare(allowedUsername, username) == 0 {
 					return nil
 				}
 			}
-		}
 
-		return ERR_ROLE_NOT_ALLOWED
+			return jwt.NewValidationError(errors.New("user not allowed"))
+		}
 	}
 
-	return nil
+	return jwt.ErrMissingRequiredClaim(USERNAME_CLAIM)
 }
 
-func ValidateRequest(validator *JWTValidator, tokenHeader string) (*TeleportClaims, error) {
-	tokenHeader = strings.TrimSpace(tokenHeader)
+type allowedRolesValidator struct {
+	jwt.Validator
+	config AccessControl
+}
 
-	if len(tokenHeader) == 0 {
-		return nil, ERR_TOKEN_EMPTY
+func (validator allowedRolesValidator) Validate(ctx context.Context, token jwt.Token) jwt.ValidationError {
+	if len(validator.config.AllowedRoles) == 0 {
+		return nil
 	}
 
-	if strings.HasPrefix(tokenHeader, "Bearer ") {
-		tokenHeader = strings.TrimPrefix(tokenHeader, "Bearer ")
+	if roleClaim, exists := token.Get(ROLES_CLAIM); exists {
+		if roles, ok := roleClaim.([]string); ok {
+			for _, allowedRole := range validator.config.AllowedRoles {
+				for _, role := range roles {
+					if strings.Compare(allowedRole, role) == 0 {
+						return nil
+					}
+				}
+			}
+
+			return jwt.NewValidationError(errors.New("role not allowed"))
+		}
 	}
 
-	claims, err := validator.Validate(tokenHeader)
-	if err != nil {
-		validator.Logger.Errorw("invalid token", "err", err)
-		validator.Logger.Debugw("token", "token", tokenHeader, "claims", claims)
-		return nil, ERR_TOKEN_INVALID
-	}
+	return jwt.ErrMissingRequiredClaim(ROLES_CLAIM)
+}
 
-	if claims.ExpiresAt == nil {
-		validator.Logger.Error("token does not have an expired field")
-		validator.Logger.Debugw("token", "token", tokenHeader, "claims", claims)
-		return nil, ERR_TOKEN_INVALID
-	}
-
-	return claims, nil
+func WithAllowedRoles(acl AccessControl) jwt.ValidateOption {
+	return jwt.WithValidator(&allowedRolesValidator{config: acl})
 }

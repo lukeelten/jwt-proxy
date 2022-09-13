@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi9/go-toolset:1.17.12 as builder
+FROM registry.access.redhat.com/ubi9/go-toolset:1.17 as builder
 
 USER root
 RUN mkdir -p /app

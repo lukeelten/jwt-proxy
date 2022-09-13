@@ -2,7 +2,9 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/lestrrat-go/jwx/v2/jwt"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -158,30 +160,19 @@ func (proxy *Proxy) ServeHTTP(response http.ResponseWriter, request *http.Reques
 		}()
 	}
 
-	tokenValue := request.Header.Get(proxy.Config.Teleport.TokenHeader)
-	proxy.Logger.Debugw("got request", "token", tokenValue, "uri", request.RequestURI, "method", request.Method)
-
-	claims, err := ValidateRequest(proxy.validator, tokenValue)
+	token, err := jwt.ParseRequest(request, jwt.WithHeaderKey(proxy.Config.Teleport.TokenHeader))
 	if err != nil {
-		proxy.Logger.Errorw("got invalid token", "err", err)
+		proxy.Unauthenticated(request, response, jwt.NewValidationError(errors.New("invalid or missing token")))
+		return
+	}
+
+	err = jwt.Validate(token, WithAllowedUsernames(proxy.Config.AccessControl), WithAllowedRoles(proxy.Config.AccessControl))
+	if err != nil {
 		proxy.Unauthenticated(request, response, err)
 		return
 	}
 
-	proxy.Logger.Debugw("successfully validated token", "claims", claims)
-	err = CheckAllowedUsernames(&proxy.Config.AccessControl, claims)
-	if err != nil {
-		proxy.Logger.Errorw("username not allowed", "err", err, "username", claims.Username)
-		proxy.Unauthenticated(request, response, err)
-		return
-	}
-
-	err = CheckAllowedRoles(&proxy.Config.AccessControl, claims)
-	if err != nil {
-		proxy.Logger.Errorw("role not allowed", "err", err, "roles", claims.Roles)
-		proxy.Unauthenticated(request, response, err)
-		return
-	}
+	proxy.Logger.Debugw("got request", "uri", request.RequestURI, "method", request.Method)
 
 	// append additional header
 	for _, header := range proxy.Config.AdditionalHeaders {
@@ -203,22 +194,48 @@ func (proxy *Proxy) ServeHTTP(response http.ResponseWriter, request *http.Reques
 
 	// Pass Token as Authorization Bearer
 	if proxy.Config.Token.PassAsBearer {
-		request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", tokenValue))
+		request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", request.Header.Get(proxy.Config.Teleport.TokenHeader)))
 	}
 
 	// Pass Token as custom header
 	if len(proxy.Config.Token.PassTokenAsHeader) > 0 {
-		request.Header.Set(proxy.Config.Token.PassTokenAsHeader, fmt.Sprintf("Bearer %s", tokenValue))
+		request.Header.Set(proxy.Config.Token.PassTokenAsHeader, fmt.Sprintf("Bearer %s", request.Header.Get(proxy.Config.Teleport.TokenHeader)))
 	}
 
 	// Pass username as custom header
 	if len(proxy.Config.Token.UsernameHeader) > 0 {
-		request.Header.Set(proxy.Config.Token.UsernameHeader, claims.Username)
+		var username string
+		usernameClaim, ok := token.Get(USERNAME_CLAIM)
+		if ok {
+			if user, ok := usernameClaim.(string); ok {
+				username = user
+			}
+		}
+
+		if len(username) == 0 {
+			proxy.Logger.Warn("Got empty username claim")
+			proxy.Logger.Debugw("debug info", "token", token, "request", request)
+		}
+
+		request.Header.Set(proxy.Config.Token.UsernameHeader, username)
 	}
 
 	// Pass roles as custom header
 	if len(proxy.Config.Token.RolesHeader) > 0 {
-		request.Header.Set(proxy.Config.Token.RolesHeader, strings.Join(claims.Roles, ", "))
+		var roles []string
+		rolesClaim, ok := token.Get(ROLES_CLAIM)
+		if ok {
+			if userRoles, ok := rolesClaim.([]string); ok {
+				roles = userRoles
+			}
+		}
+
+		if len(roles) == 0 {
+			proxy.Logger.Warn("Got empty roles claim")
+			proxy.Logger.Debugw("debug info", "token", token, "request", request)
+		}
+
+		request.Header.Set(proxy.Config.Token.RolesHeader, strings.Join(roles, ", "))
 	}
 
 	if proxy.Config.Server.AppendProxyHeaders {
@@ -229,7 +246,7 @@ func (proxy *Proxy) ServeHTTP(response http.ResponseWriter, request *http.Reques
 
 		forwardedProto := request.Header.Get(HEADER_FORWARDED_PROTO)
 		if len(forwardedProto) == 0 {
-			request.Header.Set(HEADER_FORWARDED_PROTO, strings.ToLower(request.URL.Scheme))
+			request.Header.Set(HEADER_FORWARDED_PROTO, getRequestScheme(request))
 		}
 
 		forwardedHost := request.Header.Get(HEADER_FORWARDED_HOST)

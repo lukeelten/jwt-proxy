@@ -47,9 +47,22 @@ func getIntermediateTLSConfig() *tls.Config {
 	}
 }
 
+func getRequestScheme(request *http.Request) string {
+	if len(request.URL.Scheme) == 0 {
+		if request.TLS != nil {
+			return "https"
+		}
+
+		return "http"
+	}
+
+	return strings.ToLower(request.URL.Scheme)
+}
+
 func (proxy *Proxy) Unauthenticated(request *http.Request, resp http.ResponseWriter, authError error) {
+	proxy.Logger.Debugw("Create error response", "err", authError, "request", request)
 	if proxy.MetricsServer != nil {
-		proxy.MetricsServer.CountError(request, authError)
+		proxy.MetricsServer.CountError(request)
 	}
 
 	resp.WriteHeader(http.StatusUnauthorized)
