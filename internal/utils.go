@@ -60,7 +60,7 @@ func getRequestScheme(request *http.Request) string {
 }
 
 func (proxy *Proxy) Unauthenticated(request *http.Request, resp http.ResponseWriter, authError error) {
-	proxy.Logger.Debugw("Create error response", "err", authError, "request", request)
+	proxy.Logger.Debugw("Create error response", "err", authError)
 	if proxy.MetricsServer != nil {
 		proxy.MetricsServer.CountError(request)
 	}

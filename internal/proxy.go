@@ -2,8 +2,8 @@ package internal
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	"net/http"
 	"net/http/httputil"
@@ -156,13 +156,14 @@ func (proxy *Proxy) ServeHTTP(response http.ResponseWriter, request *http.Reques
 		timer := proxy.MetricsServer.StartRequestTimer(request)
 		defer func() {
 			dur := timer.ObserveDuration()
-			proxy.Logger.Debugw("Request completed", "duration", dur, "request", request)
+			proxy.Logger.Debugw("Request completed", "duration", dur)
 		}()
 	}
 
-	token, err := jwt.ParseRequest(request, jwt.WithHeaderKey(proxy.Config.Teleport.TokenHeader))
+	token, err := jwt.ParseRequest(request, jwt.WithKeySet(proxy.validator.KeysCache, jws.WithRequireKid(false)), jwt.WithHeaderKey(proxy.Config.Teleport.TokenHeader))
 	if err != nil {
-		proxy.Unauthenticated(request, response, jwt.NewValidationError(errors.New("invalid or missing token")))
+		proxy.Logger.Debugw("debug", "err", err, "headers", request.Header)
+		proxy.Unauthenticated(request, response, err)
 		return
 	}
 
@@ -214,7 +215,7 @@ func (proxy *Proxy) ServeHTTP(response http.ResponseWriter, request *http.Reques
 
 		if len(username) == 0 {
 			proxy.Logger.Warn("Got empty username claim")
-			proxy.Logger.Debugw("debug info", "token", token, "request", request)
+			proxy.Logger.Debugw("debug info", "token", token)
 		}
 
 		request.Header.Set(proxy.Config.Token.UsernameHeader, username)
@@ -232,7 +233,7 @@ func (proxy *Proxy) ServeHTTP(response http.ResponseWriter, request *http.Reques
 
 		if len(roles) == 0 {
 			proxy.Logger.Warn("Got empty roles claim")
-			proxy.Logger.Debugw("debug info", "token", token, "request", request)
+			proxy.Logger.Debugw("debug info", "token", token)
 		}
 
 		request.Header.Set(proxy.Config.Token.RolesHeader, strings.Join(roles, ", "))

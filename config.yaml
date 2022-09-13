@@ -1,5 +1,6 @@
-upstream: "http://localhost:8080"
+upstream: "https://schuetzen-elten.de"
 debug: true
+
 metrics:
   enabled: false
   listenAddr: 0.0.0.0:9090
@@ -7,10 +8,8 @@ metrics:
 
 server:
   requireTls: false
-  keyFile: "/cert/tls.key"
-  certFile: "/cert/tls.crt"
   listenHttp: 0.0.0.0:8081
-  listenHttps: 0.0.0.0:8444
+  listenHttps: ""
   tlsProfile: modern
   appendProxyHeaders: true
 

@@ -4,10 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jwt"
 	"go.uber.org/zap"
 	"net/http"
-	"time"
 )
 
 type JWTValidator struct {
@@ -16,7 +14,7 @@ type JWTValidator struct {
 	insecure bool
 
 	shutdownFunc context.CancelFunc
-	keysCache    jwk.Set
+	KeysCache    jwk.Set
 }
 
 type TeleportClaims struct {
@@ -43,21 +41,16 @@ func NewJWTValidator(config TeleportConfig, logger *zap.SugaredLogger) *JWTValid
 	}
 
 	cache := jwk.NewCache(ctx)
-	err := cache.Register(config.getJwksUrl(), jwk.WithMinRefreshInterval(60*time.Minute), jwk.WithHTTPClient(client))
+	err := cache.Register(config.getJwksUrl(), jwk.WithMinRefreshInterval(config.RefreshInternal), jwk.WithHTTPClient(client))
 	if err != nil {
 		logger.Fatalw("cannot create key set", "err", err, "config", config)
 	}
 
-	jva.keysCache = jwk.NewCachedSet(cache, config.getJwksUrl())
+	jva.KeysCache = jwk.NewCachedSet(cache, config.getJwksUrl())
 
 	return jva
 }
 
 func (jva *JWTValidator) Shutdown() {
 	jva.shutdownFunc()
-}
-
-func (jva *JWTValidator) Parse(tokenString string) (jwt.Token, error) {
-	token, err := jwt.Parse([]byte(tokenString), jwt.WithKeySet(jva.keysCache))
-	return token, err
 }

@@ -15,13 +15,20 @@ func main() {
 
 	var logger *zap.Logger
 	if config.Debug {
-		logger, _ = zap.NewDevelopment()
-		logger.Info("Enable Debug Mode")
+		logger, err = zap.NewDevelopment()
 	} else {
-		logger, _ = zap.NewProduction()
+		config := zap.NewProductionConfig()
+		config.Encoding = "console"
+		config.EncoderConfig = zap.NewDevelopmentEncoderConfig()
+		logger, err = config.Build()
 	}
-	defer logger.Sync()
 
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer logger.Sync()
+	logger.Debug("Enable debug mode")
 	logger.Sugar().Debugw("Read Config", "config", config)
 
 	proxy, err := internal.NewProxy(config, logger.Sugar())
