@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
 	"github.com/lukeelten/jwt-proxy/internal"
 	"go.uber.org/zap"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
@@ -28,13 +33,19 @@ func main() {
 	}
 
 	defer logger.Sync()
-	logger.Debug("Enable debug mode")
-	logger.Sugar().Debugw("Read Config", "config", config)
+	sugar := logger.Sugar()
+	sugar.Debug("Enable debug mode")
+	sugar.Debugw("Read Config", "config", config)
 
-	proxy, err := internal.NewProxy(config, logger.Sugar())
+	proxy, err := internal.NewProxy(config, sugar)
 	if err != nil {
 		logger.Fatal(err.Error())
 	}
 
-	proxy.Run()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGQUIT)
+	defer stop()
+	err = proxy.Run(ctx)
+	if err != nil && err != http.ErrServerClosed {
+		sugar.Fatalw("got runtime error", "err", err)
+	}
 }

@@ -3,17 +3,15 @@ package internal
 import (
 	"context"
 	"fmt"
+	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
-	"os/signal"
-	"sync"
-	"syscall"
-
-	"go.uber.org/zap"
 	"strings"
 )
 
@@ -29,7 +27,7 @@ type Proxy struct {
 	Logger *zap.SugaredLogger
 	Config *ProxyConfig
 
-	validator     *JWTValidator
+	keySet        jwk.Set
 	HttpServer    *http.Server
 	HttpsServer   *http.Server
 	Target        *url.URL
@@ -48,7 +46,6 @@ func NewProxy(config *ProxyConfig, logger *zap.SugaredLogger) (*Proxy, error) {
 	proxy := &Proxy{
 		Config:        config,
 		Logger:        logger,
-		validator:     NewJWTValidator(config.Teleport, logger),
 		reverseProxy:  httputil.NewSingleHostReverseProxy(target),
 		Target:        target,
 		HttpServer:    nil,
@@ -59,23 +56,44 @@ func NewProxy(config *ProxyConfig, logger *zap.SugaredLogger) (*Proxy, error) {
 	return proxy, nil
 }
 
-func (proxy *Proxy) Run() {
-	var wg sync.WaitGroup
+func (proxy *Proxy) Run(globalContext context.Context) error {
+	errGroup, ctx := errgroup.WithContext(globalContext)
+	baseContextFunc := func(_ net.Listener) context.Context {
+		return ctx
+	}
+
+	proxy.keySet = GetKeySet(ctx, proxy.Config.Teleport, proxy.Logger)
+
 	if len(proxy.Config.Server.ListenHttp) > 0 {
 		proxy.HttpServer = &http.Server{
-			Addr:    proxy.Config.Server.ListenHttp,
-			Handler: proxy,
+			Addr:        proxy.Config.Server.ListenHttp,
+			Handler:     proxy,
+			BaseContext: baseContextFunc,
 		}
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		errGroup.Go(func() error {
 			proxy.Logger.Infof("Starting HTTP Server on: %s", proxy.Config.Server.ListenHttp)
 			err := proxy.HttpServer.ListenAndServe()
+
 			if err != http.ErrServerClosed {
 				proxy.Logger.Errorf("HTTP Server error: %v", err)
+				return err
 			}
-		}()
+
+			return nil
+		})
+
+		errGroup.Go(func() error {
+			<-ctx.Done()
+			err := proxy.HttpServer.Shutdown(context.Background())
+
+			if err != nil && err != http.ErrServerClosed {
+				proxy.Logger.Errorw("Got error during HTTP server shutdown", "error", err)
+				return err
+			}
+
+			return nil
+		})
 	}
 
 	if len(proxy.Config.Server.ListenHttps) > 0 {
@@ -85,69 +103,66 @@ func (proxy *Proxy) Run() {
 		}
 
 		proxy.HttpsServer = &http.Server{
-			Addr:      proxy.Config.Server.ListenHttps,
-			Handler:   proxy,
-			TLSConfig: tlsConfig,
+			Addr:        proxy.Config.Server.ListenHttps,
+			Handler:     proxy,
+			BaseContext: baseContextFunc,
+			TLSConfig:   tlsConfig,
 		}
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		errGroup.Go(func() error {
 			proxy.Logger.Infof("Starting HTTPS Server on: %s", proxy.Config.Server.ListenHttp)
 			err := proxy.HttpsServer.ListenAndServeTLS("", "")
+
 			if err != http.ErrServerClosed {
 				proxy.Logger.Errorf("HTTPS Server error: %v", err)
+				return err
 			}
-		}()
+
+			return nil
+		})
+
+		errGroup.Go(func() error {
+			<-ctx.Done()
+			err := proxy.HttpsServer.Shutdown(context.Background())
+
+			if err != nil && err != http.ErrServerClosed {
+				proxy.Logger.Errorw("Got error during HTTPS server shutdown", "error", err)
+				return err
+			}
+
+			return nil
+		})
 	}
 
 	if proxy.Config.Metrics.Enabled {
 		proxy.MetricsServer = NewMetricsServer(proxy.Config.Metrics, proxy.Logger)
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		errGroup.Go(func() error {
 			err := proxy.MetricsServer.Start()
+
 			if err != http.ErrServerClosed {
 				proxy.Logger.Errorf("Metrics Server error: %v", err)
+				return err
 			}
-		}()
-	}
 
-	exitChannel := make(chan os.Signal, 1)
-	signal.Notify(exitChannel, syscall.SIGKILL, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	go func() {
-		<-exitChannel
-		// This will ensure that the main function is not returned until all shutdown sequences has been finished.
-		// It is necessary because ListenAndServe will terminate immediately after shutdown call, but the connections may not have been terminated.
-		wg.Add(1)
-		defer wg.Done()
+			return nil
+		})
 
-		proxy.validator.Shutdown()
-
-		if proxy.HttpServer != nil {
-			err := proxy.HttpServer.Shutdown(context.Background())
-			if err != nil && err != http.ErrServerClosed {
-				proxy.Logger.Errorw("Got error during HTTP server shutdown", "error", err)
-			}
-		}
-
-		if proxy.HttpsServer != nil {
-			err := proxy.HttpsServer.Shutdown(context.Background())
-			if err != nil && err != http.ErrServerClosed {
-				proxy.Logger.Errorw("Got error during HTTPS server shutdown", "error", err)
-			}
-		}
-
-		if proxy.MetricsServer != nil {
+		errGroup.Go(func() error {
+			<-ctx.Done()
 			err := proxy.MetricsServer.Shutdown()
+
 			if err != nil && err != http.ErrServerClosed {
 				proxy.Logger.Errorw("Got error during metrics server shutdown", "error", err)
+				return err
 			}
-		}
-	}()
 
-	wg.Wait()
+			return nil
+		})
+	}
+
+	// Waits until all go functions has returned. This is important to properly shut down any ongoing request
+	return errGroup.Wait()
 }
 
 func (proxy *Proxy) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -160,7 +175,7 @@ func (proxy *Proxy) ServeHTTP(response http.ResponseWriter, request *http.Reques
 		}()
 	}
 
-	token, err := jwt.ParseRequest(request, jwt.WithKeySet(proxy.validator.KeysCache, jws.WithRequireKid(false)), jwt.WithHeaderKey(proxy.Config.Teleport.TokenHeader))
+	token, err := jwt.ParseRequest(request, jwt.WithKeySet(proxy.keySet, jws.WithRequireKid(false)), jwt.WithHeaderKey(proxy.Config.Teleport.TokenHeader))
 	if err != nil {
 		proxy.Logger.Debugw("debug", "err", err, "headers", request.Header)
 		proxy.Unauthenticated(request, response, err)
