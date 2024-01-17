@@ -56,6 +56,8 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 
 	if len(proxy.Config.Server.ListenHttp) > 0 {
 		httpServer := echo.New()
+		httpServer.HideBanner = true
+		httpServer.HidePort = true
 		httpServer.Use(echoprometheus.NewMiddleware("jwt_proxy_http"))
 		httpServer.Use(middleware.Recover())
 		httpServer.Use(middleware.RequestLoggerWithConfig(proxy.loggerConfig()))
@@ -92,6 +94,8 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 
 	if len(proxy.Config.Server.ListenHttps) > 0 {
 		httpsServer := echo.New()
+		httpsServer.HideBanner = true
+		httpsServer.HidePort = true
 		httpsServer.Use(echoprometheus.NewMiddleware("jwt_proxy_https"))
 		httpsServer.Use(middleware.Recover())
 		httpsServer.Use(middleware.RequestLoggerWithConfig(proxy.loggerConfig()))
@@ -128,6 +132,8 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 
 	if proxy.Config.Metrics.Enabled {
 		metricsServer := echo.New()
+		metricsServer.HideBanner = true
+		metricsServer.HidePort = true
 		metricsServer.Use(echoprometheus.NewMiddleware("jwt_proxy_metrics"))
 		metricsServer.Use(middleware.Recover())
 
