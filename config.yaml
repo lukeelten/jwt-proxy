@@ -1,5 +1,5 @@
-upstream: "https://schuetzen-elten.de"
-debug: true
+upstream: "http://localhost"
+debug: false
 
 metrics:
   enabled: false
@@ -10,8 +10,6 @@ server:
   requireTls: false
   listenHttp: 0.0.0.0:8081
   listenHttps: ""
-  tlsProfile: modern
-  appendProxyHeaders: true
 
 teleport:
   proxyAddr: teleport.lukeelten.de:8443

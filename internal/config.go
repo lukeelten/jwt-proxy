@@ -15,7 +15,7 @@ import (
 const DEFAULT_CONFIG_FILE_NAME = "config.yaml"
 
 type ProxyConfig struct {
-	Upstream string `yaml:"upstream" env:"UPSTREAM" env-required`
+	Upstream string `yaml:"upstream" env:"UPSTREAM" env-required:""`
 	Debug    bool   `yaml:"debug" env:"DEBUG" env-default:"false"`
 
 	Metrics MetricsConfig `yaml:"metrics"`
@@ -77,7 +77,7 @@ func LoadConfig() *ProxyConfig {
 	if len(configFile) > 0 {
 		_, err := os.Stat(configFile)
 		if err != nil {
-			log.Fatal("Cannot find given config file: %v", configFile)
+			log.Fatalf("Cannot find given config file: %s", configFile)
 		}
 	} else {
 		_, err := os.Stat(DEFAULT_CONFIG_FILE_NAME)
