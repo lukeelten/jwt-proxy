@@ -136,6 +136,7 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 		metricsServer.HidePort = true
 		metricsServer.Use(echoprometheus.NewMiddleware("jwt_proxy_metrics"))
 		metricsServer.Use(middleware.Recover())
+		metricsServer.GET("/metrics", echoprometheus.NewHandler())
 
 		errGroup.Go(func() error {
 			err := metricsServer.Start(proxy.Config.Metrics.ListenAddr)
