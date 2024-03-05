@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi9/go-toolset:1.20 as builder
+FROM docker.io/library/golang:1.22 as builder
 
 USER root
 RUN mkdir -p /app
