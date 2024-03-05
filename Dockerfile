@@ -1,17 +1,9 @@
-FROM docker.io/library/golang:1.22 as builder
-
-USER root
-RUN mkdir -p /app
-WORKDIR /app
-COPY . .
-RUN go build -o jwt-proxy -ldflags="-s -w" ./cmd/jwt-proxy
-
 FROM registry.access.redhat.com/ubi9-minimal
 LABEL maintainer="Tobias Derksen <t.derksen@mailbox.org>"
 
-ENV TZ=Europe/Berlin
+ENV TZ=Europe/Berlin CONFIG_FILE=config.yaml
 
-COPY --from=builder /app/jwt-proxy /jwt-proxy
+COPY jwt-proxy /jwt-proxy
 
 ENTRYPOINT [ "/jwt-proxy" ]
 CMD []
