@@ -4,18 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+
 	"github.com/labstack/echo-contrib/echoprometheus"
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
-	"net/http"
-	"net/url"
-	"strings"
-	"time"
 )
 
 type Proxy struct {
@@ -56,8 +56,6 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 
 	if len(proxy.Config.Server.ListenHttp) > 0 {
 		httpServer := echo.New()
-		httpServer.HideBanner = true
-		httpServer.HidePort = true
 		httpServer.Use(echoprometheus.NewMiddleware("jwt_proxy_http"))
 		httpServer.Use(middleware.Recover())
 		httpServer.Use(middleware.RequestLoggerWithConfig(proxy.loggerConfig()))
@@ -66,25 +64,17 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 
 		errGroup.Go(func() error {
 			proxy.Logger.Infof("Starting HTTP Server on: %s", proxy.Config.Server.ListenHttp)
-			err := httpServer.Start(proxy.Config.Server.ListenHttp)
+
+			startConfig := echo.StartConfig{
+				Address:    proxy.Config.Server.ListenHttp,
+				HideBanner: true,
+				HidePort:   true,
+			}
+
+			err := startConfig.Start(ctx, httpServer)
 
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				proxy.Logger.Errorf("HTTP Server error: %v", err)
-				return err
-			}
-
-			return nil
-		})
-
-		errGroup.Go(func() error {
-			<-ctx.Done()
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			err := httpServer.Shutdown(shutdownCtx)
-
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				proxy.Logger.Errorw("Got error during HTTP server shutdown", "error", err)
 				return err
 			}
 
@@ -94,8 +84,6 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 
 	if len(proxy.Config.Server.ListenHttps) > 0 {
 		httpsServer := echo.New()
-		httpsServer.HideBanner = true
-		httpsServer.HidePort = true
 		httpsServer.Use(echoprometheus.NewMiddleware("jwt_proxy_https"))
 		httpsServer.Use(middleware.Recover())
 		httpsServer.Use(middleware.RequestLoggerWithConfig(proxy.loggerConfig()))
@@ -103,26 +91,18 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 		httpsServer.Use(middleware.Proxy(middleware.NewRandomBalancer(proxyTargets)))
 
 		errGroup.Go(func() error {
-			proxy.Logger.Infof("Starting HTTPS Server on: %s", proxy.Config.Server.ListenHttp)
-			err := httpsServer.StartTLS(proxy.Config.Server.ListenHttps, proxy.Config.Server.CertFile, proxy.Config.Server.KeyFile)
+			proxy.Logger.Infof("Starting HTTPS Server on: %s", proxy.Config.Server.ListenHttps)
+
+			startConfig := echo.StartConfig{
+				Address:    proxy.Config.Server.ListenHttps,
+				HideBanner: true,
+				HidePort:   true,
+			}
+
+			err := startConfig.StartTLS(ctx, httpsServer, proxy.Config.Server.CertFile, proxy.Config.Server.KeyFile)
 
 			if !errors.Is(err, http.ErrServerClosed) {
 				proxy.Logger.Errorf("HTTPS Server error: %v", err)
-				return err
-			}
-
-			return nil
-		})
-
-		errGroup.Go(func() error {
-			<-ctx.Done()
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			err := httpsServer.Shutdown(shutdownCtx)
-
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				proxy.Logger.Errorw("Got error during HTTPS server shutdown", "error", err)
 				return err
 			}
 
@@ -132,32 +112,20 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 
 	if proxy.Config.Metrics.Enabled {
 		metricsServer := echo.New()
-		metricsServer.HideBanner = true
-		metricsServer.HidePort = true
 		metricsServer.Use(echoprometheus.NewMiddleware("jwt_proxy_metrics"))
 		metricsServer.Use(middleware.Recover())
 		metricsServer.GET("/metrics", echoprometheus.NewHandler())
 
 		errGroup.Go(func() error {
-			err := metricsServer.Start(proxy.Config.Metrics.ListenAddr)
+			startConfig := echo.StartConfig{
+				Address:    proxy.Config.Metrics.ListenAddr,
+				HideBanner: true,
+				HidePort:   true,
+			}
+			err := startConfig.Start(ctx, metricsServer)
 
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				proxy.Logger.Errorf("Metrics Server error: %v", err)
-				return err
-			}
-
-			return nil
-		})
-
-		errGroup.Go(func() error {
-			<-ctx.Done()
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			err := metricsServer.Shutdown(shutdownCtx)
-
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				proxy.Logger.Errorw("Got error during metrics server shutdown", "error", err)
 				return err
 			}
 
@@ -170,7 +138,7 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 }
 
 func (proxy *Proxy) authenticationMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 		request := c.Request()
 		token, err := jwt.ParseRequest(request, jwt.WithKeySet(proxy.keySet, jws.WithRequireKid(false)), jwt.WithHeaderKey(proxy.Config.Teleport.TokenHeader))
 		if err != nil {
@@ -256,7 +224,7 @@ func (proxy *Proxy) loggerConfig() middleware.RequestLoggerConfig {
 	loggerConfig := middleware.RequestLoggerConfig{
 		LogStatus: true,
 		LogURI:    true,
-		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
+		LogValuesFunc: func(c *echo.Context, v middleware.RequestLoggerValues) error {
 			proxy.Logger.Infow("request", "protocol", v.Protocol, "method", v.Method, "uri", v.URI, "status", v.Status, "latency", v.Latency.String(), "content_length", v.ContentLength)
 			return nil
 		},
