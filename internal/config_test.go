@@ -314,6 +314,74 @@ func TestLoadConfig_FromEnv(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// loadConfigFrom
+// ---------------------------------------------------------------------------
+
+func TestLoadConfigFrom_NonexistentFile(t *testing.T) {
+	_, err := loadConfigFrom("/nonexistent/path/config.yaml")
+	if err == nil {
+		t.Error("loadConfigFrom() expected error for nonexistent file, got nil")
+	}
+}
+
+func TestLoadConfigFrom_MalformedYAML(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(cfgFile, []byte(":::not valid yaml:::\n"), 0600); err != nil {
+		t.Fatalf("write bad yaml: %v", err)
+	}
+	_, err := loadConfigFrom(cfgFile)
+	if err == nil {
+		t.Error("loadConfigFrom() expected error for malformed YAML, got nil")
+	}
+}
+
+func TestLoadConfigFrom_DefaultFileFallback(t *testing.T) {
+	// Change to a temp dir that has a valid config.yaml so the default
+	// file fallback is exercised (configFile argument is empty string).
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, DEFAULT_CONFIG_FILE_NAME)
+	if err := os.WriteFile(cfgFile, []byte(minimalYAML("http://default.example.com", "teleport.example.com:8443")), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	origWd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	unsetEnv(t, "UPSTREAM", "TELEPORT_HOST")
+
+	cfg, err := loadConfigFrom("") // empty → should pick up config.yaml in cwd
+	if err != nil {
+		t.Fatalf("loadConfigFrom(\"\") returned unexpected error: %v", err)
+	}
+	if cfg.Upstream != "http://default.example.com" {
+		t.Errorf("Upstream = %q, want %q", cfg.Upstream, "http://default.example.com")
+	}
+}
+
+func TestLoadConfigFrom_EnvFallback(t *testing.T) {
+	// No config file; empty string + no default file → read from env.
+	dir := t.TempDir()
+	origWd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	t.Setenv("UPSTREAM", "http://fallback.example.com")
+	t.Setenv("TELEPORT_HOST", "fallback-teleport.example.com:8443")
+
+	cfg, err := loadConfigFrom("")
+	if err != nil {
+		t.Fatalf("loadConfigFrom(\"\") returned unexpected error: %v", err)
+	}
+	if cfg.Upstream != "http://fallback.example.com" {
+		t.Errorf("Upstream = %q, want %q", cfg.Upstream, "http://fallback.example.com")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // resolveConfigFile
 // ---------------------------------------------------------------------------
 

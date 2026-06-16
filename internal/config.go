@@ -76,15 +76,24 @@ type Header struct {
 }
 
 func LoadConfig() *ProxyConfig {
-	configFile := configFileName()
+	cfg, err := loadConfigFrom(configFileName())
+	if err != nil {
+		log.Fatal(err)
+	}
+	return cfg
+}
+
+// loadConfigFrom is the testable core of LoadConfig. It resolves the config
+// file path, falls back to DEFAULT_CONFIG_FILE_NAME when present, then reads
+// the configuration from either the file or the environment. It returns an
+// error instead of calling log.Fatal so callers in tests can assert on it.
+func loadConfigFrom(configFile string) (*ProxyConfig, error) {
 	if len(configFile) > 0 {
-		_, err := os.Stat(configFile)
-		if err != nil {
-			log.Fatalf("Cannot find given config file: %s", configFile)
+		if _, err := os.Stat(configFile); err != nil {
+			return nil, fmt.Errorf("cannot find config file %q: %w", configFile, err)
 		}
 	} else {
-		_, err := os.Stat(DEFAULT_CONFIG_FILE_NAME)
-		if err == nil {
+		if _, err := os.Stat(DEFAULT_CONFIG_FILE_NAME); err == nil {
 			configFile = DEFAULT_CONFIG_FILE_NAME
 		}
 	}
@@ -100,10 +109,10 @@ func LoadConfig() *ProxyConfig {
 	}
 
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
-	return &config
+	return &config, nil
 }
 
 func configFileName() string {
