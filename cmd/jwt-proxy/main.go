@@ -42,7 +42,7 @@ func main() {
 		logger.Fatal(err.Error())
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGQUIT)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
 	err = proxy.Run(ctx)
 	if err != nil && err != http.ErrServerClosed {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"github.com/lestrrat-go/jwx/v2/jwt"
-	"strings"
 )
 
 const (
@@ -12,8 +11,28 @@ const (
 	ROLES_CLAIM    = "roles"
 )
 
+// toStringSlice converts a JWT claim value to a []string.
+// jwx v2 decodes private claims via JSON unmarshalling, so a JSON array arrives
+// as []interface{} (never []string). A single string value is also handled.
+func toStringSlice(v interface{}) []string {
+	switch val := v.(type) {
+	case []string:
+		return val
+	case string:
+		return []string{val}
+	case []interface{}:
+		result := make([]string, 0, len(val))
+		for _, item := range val {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	}
+	return nil
+}
+
 type allowedUsernameValidator struct {
-	jwt.Validator
 	config AccessControl
 }
 
@@ -29,7 +48,7 @@ func (validator *allowedUsernameValidator) Validate(ctx context.Context, token j
 	if usernameClaim, exists := token.Get(USERNAME_CLAIM); exists {
 		if username, ok := usernameClaim.(string); ok {
 			for _, allowedUsername := range validator.config.AllowedUsers {
-				if strings.Compare(allowedUsername, username) == 0 {
+				if allowedUsername == username {
 					return nil
 				}
 			}
@@ -42,20 +61,20 @@ func (validator *allowedUsernameValidator) Validate(ctx context.Context, token j
 }
 
 type allowedRolesValidator struct {
-	jwt.Validator
 	config AccessControl
 }
 
-func (validator allowedRolesValidator) Validate(ctx context.Context, token jwt.Token) jwt.ValidationError {
+func (validator *allowedRolesValidator) Validate(ctx context.Context, token jwt.Token) jwt.ValidationError {
 	if len(validator.config.AllowedRoles) == 0 {
 		return nil
 	}
 
 	if roleClaim, exists := token.Get(ROLES_CLAIM); exists {
-		if roles, ok := roleClaim.([]string); ok {
+		roles := toStringSlice(roleClaim)
+		if roles != nil {
 			for _, allowedRole := range validator.config.AllowedRoles {
 				for _, role := range roles {
-					if strings.Compare(allowedRole, role) == 0 {
+					if allowedRole == role {
 						return nil
 					}
 				}
@@ -71,3 +90,7 @@ func (validator allowedRolesValidator) Validate(ctx context.Context, token jwt.T
 func WithAllowedRoles(acl AccessControl) jwt.ValidateOption {
 	return jwt.WithValidator(&allowedRolesValidator{config: acl})
 }
+
+// Ensure both validators satisfy the jwt.Validator interface at compile time.
+var _ jwt.Validator = (*allowedUsernameValidator)(nil)
+var _ jwt.Validator = (*allowedRolesValidator)(nil)

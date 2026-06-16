@@ -18,7 +18,7 @@ func GetKeySet(ctx context.Context, config TeleportConfig, logger *zap.SugaredLo
 	}
 
 	cache := jwk.NewCache(ctx)
-	err := cache.Register(config.getJwksUrl(), jwk.WithMinRefreshInterval(config.RefreshInternal), jwk.WithHTTPClient(client))
+	err := cache.Register(config.getJwksUrl(), jwk.WithMinRefreshInterval(config.RefreshInterval), jwk.WithHTTPClient(client))
 	if err != nil {
 		logger.Fatalw("cannot create key set", "err", err, "config", config)
 	}

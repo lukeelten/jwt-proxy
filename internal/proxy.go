@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/labstack/echo-contrib/echoprometheus"
+	"github.com/labstack/echo-contrib/v5/echoprometheus"
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
 	"github.com/lestrrat-go/jwx/v2/jwk"
@@ -101,7 +101,7 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 
 			err := startConfig.StartTLS(ctx, httpsServer, proxy.Config.Server.CertFile, proxy.Config.Server.KeyFile)
 
-			if !errors.Is(err, http.ErrServerClosed) {
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				proxy.Logger.Errorf("HTTPS Server error: %v", err)
 				return err
 			}
@@ -152,6 +152,20 @@ func (proxy *Proxy) authenticationMiddleware(next echo.HandlerFunc) echo.Handler
 			return echo.NewHTTPError(http.StatusUnauthorized, err.Error())
 		}
 
+		// Unconditionally strip all identity/auth headers that this proxy may
+		// set, so clients cannot spoof them regardless of which features are
+		// enabled. Trusted values are written back below.
+		request.Header.Del("Authorization")
+		if len(proxy.Config.Token.PassTokenAsHeader) > 0 {
+			request.Header.Del(proxy.Config.Token.PassTokenAsHeader)
+		}
+		if len(proxy.Config.Token.UsernameHeader) > 0 {
+			request.Header.Del(proxy.Config.Token.UsernameHeader)
+		}
+		if len(proxy.Config.Token.RolesHeader) > 0 {
+			request.Header.Del(proxy.Config.Token.RolesHeader)
+		}
+
 		// Pass Token to Upstream
 		if !proxy.Config.Token.PassToken {
 			request.Header.Del(proxy.Config.Teleport.TokenHeader)
@@ -190,9 +204,7 @@ func (proxy *Proxy) authenticationMiddleware(next echo.HandlerFunc) echo.Handler
 			var roles []string
 			rolesClaim, ok := token.Get(ROLES_CLAIM)
 			if ok {
-				if userRoles, ok := rolesClaim.([]string); ok {
-					roles = userRoles
-				}
+				roles = toStringSlice(rolesClaim)
 			}
 
 			if len(roles) == 0 {

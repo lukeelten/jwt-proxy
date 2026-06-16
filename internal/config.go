@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
+	"fmt"
 	"github.com/ilyakaznacheev/cleanenv"
 	"log"
 	"net/url"
@@ -44,12 +45,12 @@ type TeleportConfig struct {
 	Insecure         bool          `yaml:"insecure" env:"TELEPORT_INSECURE" env-default:"false"`
 	OverrideJwksPath string        `yaml:"overrideJwksPath" env:"TELEPORT_JWKS_PATH" env-default:""`
 	TokenHeader      string        `yaml:"tokenHeader" env:"TELEPORT_TOKEN_HEADER" env-default:"Teleport-Jwt-Assertion"`
-	RefreshInternal  time.Duration `yaml:"refreshInternal" env:"TELEPORT_REFRESH_INTERVAL" env-default:"15m"`
+	RefreshInterval  time.Duration `yaml:"refreshInterval" env:"TELEPORT_REFRESH_INTERVAL" env-default:"15m"`
 }
 
 type AccessControl struct {
-	AllowedUsers []string `yaml:"allowedUsers" env-default:""`
-	AllowedRoles []string `yaml:"allowedRoles" env-default:""`
+	AllowedUsers []string `yaml:"allowedUsers" env:"ALLOWED_USERS" env-default:""`
+	AllowedRoles []string `yaml:"allowedRoles" env:"ALLOWED_ROLES" env-default:""`
 }
 
 type TokenConfig struct {
@@ -107,12 +108,16 @@ func configFileName() string {
 	configFile := flag.String("config-file", "", "Name or path of configuration file")
 	flag.Parse()
 
-	configFileEnv, ok := os.LookupEnv("CONFIG_FILE")
-	if ok {
+	// CLI flag takes precedence over the environment variable.
+	if len(*configFile) > 0 {
+		return *configFile
+	}
+
+	if configFileEnv, ok := os.LookupEnv("CONFIG_FILE"); ok {
 		return configFileEnv
 	}
 
-	return *configFile
+	return ""
 }
 
 func (t TeleportConfig) getJwksUrl() string {
@@ -146,8 +151,11 @@ func (config *ProxyConfig) Validate() error {
 		config.Server.ListenHttp = ""
 	}
 
-	if _, err := url.Parse(config.Upstream); err != nil {
-		return err
+	if u, err := url.ParseRequestURI(config.Upstream); err != nil || u.Scheme == "" || u.Host == "" {
+		if err != nil {
+			return fmt.Errorf("invalid upstream url: %w", err)
+		}
+		return fmt.Errorf("invalid upstream url %q: scheme and host are required", config.Upstream)
 	}
 
 	if len(config.Teleport.TokenHeader) == 0 {
@@ -156,6 +164,11 @@ func (config *ProxyConfig) Validate() error {
 
 	if len(config.Teleport.ProxyAddr) == 0 || (config.Teleport.Insecure && strings.HasPrefix(config.Teleport.ProxyAddr, "http")) {
 		return errors.New("invalid teleport config")
+	}
+
+	if config.Teleport.Insecure {
+		log.Print("WARNING: teleport.insecure=true — TLS certificate verification for the JWKS endpoint is disabled. " +
+			"A MITM attacker could serve forged keys and bypass JWT authentication. Do not use in production.")
 	}
 
 	_, certErr := os.Stat(config.Server.CertFile)
