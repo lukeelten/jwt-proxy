@@ -51,6 +51,12 @@ jobs:
       - run: go version
         name: show go version
 
+      - run: go vet ./...
+        name: vet
+
+      - run: go test -race ./...
+        name: test
+
       - run: go build -o jwt-proxy -ldflags="-s -w" ./cmd/jwt-proxy
         name: build jwt-proxy
 
