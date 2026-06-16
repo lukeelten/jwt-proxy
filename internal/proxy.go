@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,24 +15,23 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
-	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
 
 type Proxy struct {
 	http.Handler
 
-	Logger *zap.SugaredLogger
+	Logger *slog.Logger
 	Config *ProxyConfig
 
 	keySet jwk.Set
 	Target *url.URL
 }
 
-func NewProxy(config *ProxyConfig, logger *zap.SugaredLogger) (*Proxy, error) {
+func NewProxy(config *ProxyConfig, logger *slog.Logger) (*Proxy, error) {
 	target, err := url.Parse(config.Upstream)
 	if err != nil {
-		logger.Errorw("invalid upstream url", "url", config.Upstream)
+		logger.Error("invalid upstream url", "url", config.Upstream)
 		return nil, err
 	}
 
@@ -63,7 +63,7 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 		httpServer.Use(middleware.Proxy(middleware.NewRandomBalancer(proxyTargets)))
 
 		errGroup.Go(func() error {
-			proxy.Logger.Infof("Starting HTTP Server on: %s", proxy.Config.Server.ListenHttp)
+			proxy.Logger.Info("Starting HTTP Server", "addr", proxy.Config.Server.ListenHttp)
 
 			startConfig := echo.StartConfig{
 				Address:    proxy.Config.Server.ListenHttp,
@@ -74,7 +74,7 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 			err := startConfig.Start(ctx, httpServer)
 
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				proxy.Logger.Errorf("HTTP Server error: %v", err)
+				proxy.Logger.Error("HTTP Server error", "err", err)
 				return err
 			}
 
@@ -91,7 +91,7 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 		httpsServer.Use(middleware.Proxy(middleware.NewRandomBalancer(proxyTargets)))
 
 		errGroup.Go(func() error {
-			proxy.Logger.Infof("Starting HTTPS Server on: %s", proxy.Config.Server.ListenHttps)
+			proxy.Logger.Info("Starting HTTPS Server", "addr", proxy.Config.Server.ListenHttps)
 
 			startConfig := echo.StartConfig{
 				Address:    proxy.Config.Server.ListenHttps,
@@ -102,7 +102,7 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 			err := startConfig.StartTLS(ctx, httpsServer, proxy.Config.Server.CertFile, proxy.Config.Server.KeyFile)
 
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				proxy.Logger.Errorf("HTTPS Server error: %v", err)
+				proxy.Logger.Error("HTTPS Server error", "err", err)
 				return err
 			}
 
@@ -125,7 +125,7 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 			err := startConfig.Start(ctx, metricsServer)
 
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				proxy.Logger.Errorf("Metrics Server error: %v", err)
+				proxy.Logger.Error("Metrics Server error", "err", err)
 				return err
 			}
 
@@ -142,13 +142,13 @@ func (proxy *Proxy) authenticationMiddleware(next echo.HandlerFunc) echo.Handler
 		request := c.Request()
 		token, err := jwt.ParseRequest(request, jwt.WithKeySet(proxy.keySet, jws.WithRequireKid(false)), jwt.WithHeaderKey(proxy.Config.Teleport.TokenHeader))
 		if err != nil {
-			proxy.Logger.Debugw("unauthenticated", "err", err, "headers", request.Header)
+			proxy.Logger.Debug("unauthenticated", "err", err, "headers", request.Header)
 			return echo.NewHTTPError(http.StatusUnauthorized, err.Error())
 		}
 
 		err = jwt.Validate(token, WithAllowedUsernames(proxy.Config.AccessControl), WithAllowedRoles(proxy.Config.AccessControl))
 		if err != nil {
-			proxy.Logger.Debugw("unauthenticated", "err", err, "headers", request.Header)
+			proxy.Logger.Debug("unauthenticated", "err", err, "headers", request.Header)
 			return echo.NewHTTPError(http.StatusUnauthorized, err.Error())
 		}
 
@@ -193,7 +193,7 @@ func (proxy *Proxy) authenticationMiddleware(next echo.HandlerFunc) echo.Handler
 
 			if len(username) == 0 {
 				proxy.Logger.Warn("Got empty username claim")
-				proxy.Logger.Debugw("debug info", "token", token)
+				proxy.Logger.Debug("debug info", "token", token)
 			}
 
 			request.Header.Set(proxy.Config.Token.UsernameHeader, username)
@@ -209,7 +209,7 @@ func (proxy *Proxy) authenticationMiddleware(next echo.HandlerFunc) echo.Handler
 
 			if len(roles) == 0 {
 				proxy.Logger.Warn("Got empty roles claim")
-				proxy.Logger.Debugw("debug info", "token", token)
+				proxy.Logger.Debug("debug info", "token", token)
 			}
 
 			request.Header.Set(proxy.Config.Token.RolesHeader, strings.Join(roles, ", "))
@@ -237,7 +237,7 @@ func (proxy *Proxy) loggerConfig() middleware.RequestLoggerConfig {
 		LogStatus: true,
 		LogURI:    true,
 		LogValuesFunc: func(c *echo.Context, v middleware.RequestLoggerValues) error {
-			proxy.Logger.Infow("request", "protocol", v.Protocol, "method", v.Method, "uri", v.URI, "status", v.Status, "latency", v.Latency.String(), "content_length", v.ContentLength)
+			proxy.Logger.Info("request", "protocol", v.Protocol, "method", v.Method, "uri", v.URI, "status", v.Status, "latency", v.Latency.String(), "content_length", v.ContentLength)
 			return nil
 		},
 	}

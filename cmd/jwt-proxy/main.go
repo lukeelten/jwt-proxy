@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"github.com/lukeelten/jwt-proxy/internal"
-	"go.uber.org/zap"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,34 +18,27 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var logger *zap.Logger
+	logLevel := slog.LevelInfo
 	if config.Debug {
-		logger, err = zap.NewDevelopment()
-	} else {
-		config := zap.NewProductionConfig()
-		config.Encoding = "console"
-		config.EncoderConfig = zap.NewDevelopmentEncoderConfig()
-		logger, err = config.Build()
+		logLevel = slog.LevelDebug
 	}
 
-	if err != nil {
-		log.Fatal(err)
-	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 
-	defer logger.Sync()
-	sugar := logger.Sugar()
-	sugar.Debug("Enable debug mode")
-	sugar.Debugw("Read Config", "config", config)
+	logger.Debug("Enable debug mode")
+	logger.Debug("Read Config", "config", config)
 
-	proxy, err := internal.NewProxy(config, sugar)
+	proxy, err := internal.NewProxy(config, logger)
 	if err != nil {
-		logger.Fatal(err.Error())
+		logger.Error("failed to create proxy", "err", err)
+		os.Exit(1)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
 	err = proxy.Run(ctx)
 	if err != nil && err != http.ErrServerClosed {
-		sugar.Fatalw("got runtime error", "err", err)
+		logger.Error("got runtime error", "err", err)
+		os.Exit(1)
 	}
 }
