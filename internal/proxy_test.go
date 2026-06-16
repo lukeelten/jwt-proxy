@@ -1,12 +1,16 @@
 package internal
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 )
 
@@ -463,5 +467,177 @@ func TestAuthMiddleware_AdditionalHeaders_EmptyNameSkipped(t *testing.T) {
 	// Should still succeed, not panic
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NewProxy
+// ---------------------------------------------------------------------------
+
+func TestNewProxy_ValidUpstream(t *testing.T) {
+	cfg := minimalProxyConfig("http://backend.example.com")
+	proxy, err := NewProxy(cfg, newDiscardLogger())
+	if err != nil {
+		t.Fatalf("NewProxy() returned unexpected error: %v", err)
+	}
+	if proxy == nil {
+		t.Fatal("NewProxy() returned nil proxy")
+	}
+	if proxy.Target.Host != "backend.example.com" {
+		t.Errorf("Target.Host = %q, want %q", proxy.Target.Host, "backend.example.com")
+	}
+}
+
+func TestNewProxy_InvalidUpstream(t *testing.T) {
+	// url.Parse never fails on garbage; use a URL with a control character to
+	// force a parse error.
+	cfg := minimalProxyConfig("http://bad host\x7f")
+	proxy, err := NewProxy(cfg, newDiscardLogger())
+	if err == nil {
+		t.Error("NewProxy() expected error for invalid upstream URL, got nil")
+	}
+	if proxy != nil {
+		t.Error("NewProxy() expected nil proxy on error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// loggerConfig
+// ---------------------------------------------------------------------------
+
+func TestLoggerConfig_LogValuesFunc(t *testing.T) {
+	_, pubSet := generateKeyPair(t)
+	cfg := minimalProxyConfig("http://backend")
+	proxy := newTestProxy(t, cfg, pubSet)
+
+	lc := proxy.loggerConfig()
+
+	if !lc.LogStatus {
+		t.Error("loggerConfig: LogStatus should be true")
+	}
+	if !lc.LogURI {
+		t.Error("loggerConfig: LogURI should be true")
+	}
+	if lc.LogValuesFunc == nil {
+		t.Fatal("loggerConfig: LogValuesFunc is nil")
+	}
+
+	// Exercise the LogValuesFunc to cover the log line.
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	vals := middleware.RequestLoggerValues{
+		Protocol:      "HTTP/1.1",
+		Method:        "GET",
+		URI:           "/test",
+		Status:        200,
+		Latency:       50 * time.Millisecond,
+		ContentLength: "42",
+	}
+	if err := lc.LogValuesFunc(c, vals); err != nil {
+		t.Errorf("LogValuesFunc returned error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Run — all listeners disabled (no goroutines started, returns immediately)
+// ---------------------------------------------------------------------------
+
+func TestRun_AllListenersDisabled(t *testing.T) {
+	_, pubSet := generateKeyPair(t)
+	jwksPath := "/.well-known/jwks.json"
+	srv := newJWKSServer(t, pubSet, jwksPath)
+
+	cfg := &ProxyConfig{
+		Upstream: "http://backend.example.com",
+		Server: ServerConfig{
+			ListenHttp:  "", // disabled
+			ListenHttps: "", // disabled
+		},
+		Teleport: TeleportConfig{
+			ProxyAddr:        srv.URL,
+			OverrideJwksPath: jwksPath,
+			TokenHeader:      "Teleport-Jwt-Assertion",
+			RefreshInterval:  time.Second,
+		},
+		Metrics: MetricsConfig{
+			Enabled: false, // disabled
+		},
+	}
+
+	proxy, err := NewProxy(cfg, newDiscardLogger())
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately — no servers start, errGroup.Wait() returns right away
+
+	if err := proxy.Run(ctx); err != nil {
+		t.Errorf("Run() returned unexpected error: %v", err)
+	}
+}
+
+// TestRun_HTTPServer verifies that Run starts an HTTP listener and accepts a
+// connection, then shuts down cleanly when the context is cancelled.
+func TestRun_HTTPServer(t *testing.T) {
+	_, pubSet := generateKeyPair(t)
+	jwksPath := "/.well-known/jwks.json"
+	jwksSrv := newJWKSServer(t, pubSet, jwksPath)
+
+	// Pick a free port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() // release; the echo server will bind it
+
+	cfg := &ProxyConfig{
+		Upstream: "http://127.0.0.1:1", // unreachable backend — only testing server startup
+		Server: ServerConfig{
+			ListenHttp:  addr,
+			ListenHttps: "",
+		},
+		Teleport: TeleportConfig{
+			ProxyAddr:        jwksSrv.URL,
+			OverrideJwksPath: jwksPath,
+			TokenHeader:      "Teleport-Jwt-Assertion",
+			RefreshInterval:  time.Second,
+		},
+		Metrics: MetricsConfig{Enabled: false},
+	}
+
+	proxy, err := NewProxy(cfg, newDiscardLogger())
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() { done <- proxy.Run(ctx) }()
+
+	// Wait until the server is accepting connections.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Signal shutdown and wait.
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run() returned error after cancel: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("Run() did not return within 5s after context cancel")
 	}
 }

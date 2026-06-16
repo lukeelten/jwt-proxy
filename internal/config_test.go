@@ -237,3 +237,86 @@ func TestGetTlsConfigNotNil(t *testing.T) {
 		t.Error("getTlsConfig() returned nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Validate: insecure=true with a non-http ProxyAddr triggers the warning log
+// but must still pass validation (it is not an error).
+// ---------------------------------------------------------------------------
+
+func TestValidate_InsecureWarning(t *testing.T) {
+	certFile, keyFile := writeTempCertKeyPair(t)
+	cfg := validBaseConfig(certFile, keyFile)
+	cfg.Teleport.Insecure = true
+	// ProxyAddr does NOT start with "http", so the Insecure+http guard passes.
+	// Validate should succeed but print the warning.
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() returned unexpected error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LoadConfig
+// ---------------------------------------------------------------------------
+
+// minimalYAML returns a valid config YAML string pointing at the given
+// upstream and teleport proxy address.
+func minimalYAML(upstream, teleportAddr string) string {
+	return "upstream: \"" + upstream + "\"\n" +
+		"teleport:\n" +
+		"  proxyAddr: \"" + teleportAddr + "\"\n" +
+		"server:\n" +
+		"  listenHttp: \"127.0.0.1:0\"\n" +
+		"  listenHttps: \"\"\n"
+}
+
+func TestLoadConfig_FromFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgFile, []byte(minimalYAML("http://backend.example.com", "teleport.example.com:8443")), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Point the CONFIG_FILE env var at the temp file so configFileName picks it up
+	// without touching the global flag.CommandLine.
+	t.Setenv("CONFIG_FILE", cfgFile)
+	// Unset env vars that cleanenv would prefer over the YAML values.
+	unsetEnv(t, "UPSTREAM", "TELEPORT_HOST")
+	// Reset global flag state so configFileName can re-register the flag.
+	resetFlags(t)
+
+	cfg := LoadConfig()
+	if cfg == nil {
+		t.Fatal("LoadConfig returned nil")
+	}
+	if cfg.Upstream != "http://backend.example.com" {
+		t.Errorf("Upstream = %q, want %q", cfg.Upstream, "http://backend.example.com")
+	}
+	if cfg.Teleport.ProxyAddr != "teleport.example.com:8443" {
+		t.Errorf("ProxyAddr = %q, want %q", cfg.Teleport.ProxyAddr, "teleport.example.com:8443")
+	}
+}
+
+func TestLoadConfig_FromEnv(t *testing.T) {
+	// Ensure no config file is picked up.
+	t.Setenv("CONFIG_FILE", "")
+	// Remove the default config.yaml from the working directory's view by
+	// switching to a temp dir that has no config.yaml.
+	dir := t.TempDir()
+	origWd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	t.Setenv("UPSTREAM", "http://env-backend.example.com")
+	t.Setenv("TELEPORT_HOST", "env-teleport.example.com:8443")
+	resetFlags(t)
+
+	cfg := LoadConfig()
+	if cfg == nil {
+		t.Fatal("LoadConfig returned nil")
+	}
+	if cfg.Upstream != "http://env-backend.example.com" {
+		t.Errorf("Upstream = %q, want %q", cfg.Upstream, "http://env-backend.example.com")
+	}
+}

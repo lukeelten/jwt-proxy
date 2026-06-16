@@ -4,10 +4,12 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"flag"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -136,5 +138,32 @@ func minimalProxyConfig(upstream string) *ProxyConfig {
 		Teleport: TeleportConfig{
 			TokenHeader: "Teleport-Jwt-Assertion",
 		},
+	}
+}
+
+// resetFlags resets the global flag.CommandLine so that configFileName can
+// re-register the "config-file" flag without panicking. The original
+// flag.CommandLine is restored after the test.
+func resetFlags(t *testing.T) {
+	t.Helper()
+	old := flag.CommandLine
+	flag.CommandLine = flag.NewFlagSet(old.Name(), flag.ContinueOnError)
+	t.Cleanup(func() { flag.CommandLine = old })
+}
+
+// unsetEnv temporarily removes each named environment variable for the
+// duration of the test. t.Setenv restores the original value on cleanup;
+// we additionally call os.Unsetenv so the variable is truly absent (not
+// just set to an empty string) during the test.
+func unsetEnv(t *testing.T, keys ...string) {
+	t.Helper()
+	for _, k := range keys {
+		orig, existed := os.LookupEnv(k)
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatalf("unsetenv %s: %v", k, err)
+		}
+		if existed {
+			t.Cleanup(func() { _ = os.Setenv(k, orig) })
+		}
 	}
 }
