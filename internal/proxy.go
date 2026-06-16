@@ -48,7 +48,11 @@ func NewProxy(config *ProxyConfig, logger *slog.Logger) (*Proxy, error) {
 func (proxy *Proxy) Run(globalContext context.Context) error {
 	errGroup, ctx := errgroup.WithContext(globalContext)
 
-	proxy.keySet = GetKeySet(ctx, proxy.Config.Teleport, proxy.Logger)
+	keySet, err := GetKeySet(ctx, proxy.Config.Teleport, proxy.Logger)
+	if err != nil {
+		return fmt.Errorf("failed to initialise JWKS key set: %w", err)
+	}
+	proxy.keySet = keySet
 	proxyTargets := []*middleware.ProxyTarget{
 		{
 			URL: proxy.Target,

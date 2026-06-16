@@ -3,13 +3,14 @@ package internal
 import (
 	"context"
 	"crypto/tls"
-	"github.com/lestrrat-go/jwx/v2/jwk"
+	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
+
+	"github.com/lestrrat-go/jwx/v2/jwk"
 )
 
-func GetKeySet(ctx context.Context, config TeleportConfig, logger *slog.Logger) jwk.Set {
+func GetKeySet(ctx context.Context, config TeleportConfig, logger *slog.Logger) (jwk.Set, error) {
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
@@ -24,9 +25,8 @@ func GetKeySet(ctx context.Context, config TeleportConfig, logger *slog.Logger) 
 	cache := jwk.NewCache(ctx)
 	err := cache.Register(jwksUrl, jwk.WithMinRefreshInterval(config.RefreshInterval), jwk.WithHTTPClient(client))
 	if err != nil {
-		logger.Error("cannot create key set", "err", err, "config", config)
-		os.Exit(1)
+		return nil, fmt.Errorf("cannot register JWKS cache: %w", err)
 	}
 
-	return jwk.NewCachedSet(cache, jwksUrl)
+	return jwk.NewCachedSet(cache, jwksUrl), nil
 }
