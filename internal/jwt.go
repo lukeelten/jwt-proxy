@@ -18,12 +18,15 @@ func GetKeySet(ctx context.Context, config TeleportConfig, logger *slog.Logger) 
 		},
 	}
 
+	jwksUrl := config.getJwksUrl()
+	logger.Info("registering JWKS cache", "url", jwksUrl, "refreshInterval", config.RefreshInterval)
+
 	cache := jwk.NewCache(ctx)
-	err := cache.Register(config.getJwksUrl(), jwk.WithMinRefreshInterval(config.RefreshInterval), jwk.WithHTTPClient(client))
+	err := cache.Register(jwksUrl, jwk.WithMinRefreshInterval(config.RefreshInterval), jwk.WithHTTPClient(client))
 	if err != nil {
 		logger.Error("cannot create key set", "err", err, "config", config)
 		os.Exit(1)
 	}
 
-	return jwk.NewCachedSet(cache, config.getJwksUrl())
+	return jwk.NewCachedSet(cache, jwksUrl)
 }

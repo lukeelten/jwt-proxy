@@ -149,6 +149,7 @@ func (t TeleportConfig) getTlsConfig() *tls.Config {
 func (config *ProxyConfig) Validate() error {
 	if config.Server.RequireTls {
 		config.Server.ListenHttp = ""
+		log.Print("RequireTls=true: disabling plain HTTP listener")
 	}
 
 	if u, err := url.ParseRequestURI(config.Upstream); err != nil || u.Scheme == "" || u.Host == "" {

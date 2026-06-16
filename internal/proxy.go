@@ -41,6 +41,7 @@ func NewProxy(config *ProxyConfig, logger *slog.Logger) (*Proxy, error) {
 		Target: target,
 	}
 
+	logger.Info("proxy configured", "upstream", target.String())
 	return proxy, nil
 }
 
@@ -80,6 +81,8 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 
 			return nil
 		})
+	} else {
+		proxy.Logger.Debug("HTTP listener disabled")
 	}
 
 	if len(proxy.Config.Server.ListenHttps) > 0 {
@@ -108,6 +111,8 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 
 			return nil
 		})
+	} else {
+		proxy.Logger.Debug("HTTPS listener disabled")
 	}
 
 	if proxy.Config.Metrics.Enabled {
@@ -117,6 +122,8 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 		metricsServer.GET("/metrics", echoprometheus.NewHandler())
 
 		errGroup.Go(func() error {
+			proxy.Logger.Info("Starting Metrics Server", "addr", proxy.Config.Metrics.ListenAddr)
+
 			startConfig := echo.StartConfig{
 				Address:    proxy.Config.Metrics.ListenAddr,
 				HideBanner: true,
@@ -131,6 +138,8 @@ func (proxy *Proxy) Run(globalContext context.Context) error {
 
 			return nil
 		})
+	} else {
+		proxy.Logger.Debug("Metrics server disabled")
 	}
 
 	// Waits until all go functions has returned. This is important to properly shut down any ongoing request
@@ -142,15 +151,17 @@ func (proxy *Proxy) authenticationMiddleware(next echo.HandlerFunc) echo.Handler
 		request := c.Request()
 		token, err := jwt.ParseRequest(request, jwt.WithKeySet(proxy.keySet, jws.WithRequireKid(false)), jwt.WithHeaderKey(proxy.Config.Teleport.TokenHeader))
 		if err != nil {
-			proxy.Logger.Debug("unauthenticated", "err", err, "headers", request.Header)
+			proxy.Logger.Debug("jwt parse failed", "err", err, "remote", request.RemoteAddr, "headers", request.Header)
 			return echo.NewHTTPError(http.StatusUnauthorized, err.Error())
 		}
 
 		err = jwt.Validate(token, WithAllowedUsernames(proxy.Config.AccessControl), WithAllowedRoles(proxy.Config.AccessControl))
 		if err != nil {
-			proxy.Logger.Debug("unauthenticated", "err", err, "headers", request.Header)
+			proxy.Logger.Debug("jwt authorization rejected", "err", err, "remote", request.RemoteAddr)
 			return echo.NewHTTPError(http.StatusUnauthorized, err.Error())
 		}
+
+		proxy.Logger.Debug("authenticated", "subject", token.Subject(), "uri", request.RequestURI)
 
 		// Unconditionally strip all identity/auth headers that this proxy may
 		// set, so clients cannot spoof them regardless of which features are
@@ -173,11 +184,13 @@ func (proxy *Proxy) authenticationMiddleware(next echo.HandlerFunc) echo.Handler
 
 		// Pass Token as Authorization Bearer
 		if proxy.Config.Token.PassAsBearer {
+			proxy.Logger.Debug("passing token as Authorization Bearer")
 			request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", request.Header.Get(proxy.Config.Teleport.TokenHeader)))
 		}
 
 		// Pass Token as custom header
 		if len(proxy.Config.Token.PassTokenAsHeader) > 0 {
+			proxy.Logger.Debug("passing token as custom header", "header", proxy.Config.Token.PassTokenAsHeader)
 			request.Header.Set(proxy.Config.Token.PassTokenAsHeader, fmt.Sprintf("Bearer %s", request.Header.Get(proxy.Config.Teleport.TokenHeader)))
 		}
 
@@ -194,6 +207,8 @@ func (proxy *Proxy) authenticationMiddleware(next echo.HandlerFunc) echo.Handler
 			if len(username) == 0 {
 				proxy.Logger.Warn("Got empty username claim")
 				proxy.Logger.Debug("debug info", "token", token)
+			} else {
+				proxy.Logger.Debug("passing username header", "header", proxy.Config.Token.UsernameHeader, "username", username)
 			}
 
 			request.Header.Set(proxy.Config.Token.UsernameHeader, username)
@@ -210,6 +225,8 @@ func (proxy *Proxy) authenticationMiddleware(next echo.HandlerFunc) echo.Handler
 			if len(roles) == 0 {
 				proxy.Logger.Warn("Got empty roles claim")
 				proxy.Logger.Debug("debug info", "token", token)
+			} else {
+				proxy.Logger.Debug("passing roles header", "header", proxy.Config.Token.RolesHeader, "roles", roles)
 			}
 
 			request.Header.Set(proxy.Config.Token.RolesHeader, strings.Join(roles, ", "))
