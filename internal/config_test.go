@@ -276,13 +276,8 @@ func TestLoadConfig_FromFile(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	// Point the CONFIG_FILE env var at the temp file so configFileName picks it up
-	// without touching the global flag.CommandLine.
 	t.Setenv("CONFIG_FILE", cfgFile)
-	// Unset env vars that cleanenv would prefer over the YAML values.
 	unsetEnv(t, "UPSTREAM", "TELEPORT_HOST")
-	// Reset global flag state so configFileName can re-register the flag.
-	resetFlags(t)
 
 	cfg := LoadConfig()
 	if cfg == nil {
@@ -297,10 +292,8 @@ func TestLoadConfig_FromFile(t *testing.T) {
 }
 
 func TestLoadConfig_FromEnv(t *testing.T) {
-	// Ensure no config file is picked up.
-	t.Setenv("CONFIG_FILE", "")
-	// Remove the default config.yaml from the working directory's view by
-	// switching to a temp dir that has no config.yaml.
+	unsetEnv(t, "CONFIG_FILE")
+	// Switch to a temp dir with no config.yaml so the default file check fails.
 	dir := t.TempDir()
 	origWd, _ := os.Getwd()
 	if err := os.Chdir(dir); err != nil {
@@ -310,7 +303,6 @@ func TestLoadConfig_FromEnv(t *testing.T) {
 
 	t.Setenv("UPSTREAM", "http://env-backend.example.com")
 	t.Setenv("TELEPORT_HOST", "env-teleport.example.com:8443")
-	resetFlags(t)
 
 	cfg := LoadConfig()
 	if cfg == nil {
@@ -318,5 +310,62 @@ func TestLoadConfig_FromEnv(t *testing.T) {
 	}
 	if cfg.Upstream != "http://env-backend.example.com" {
 		t.Errorf("Upstream = %q, want %q", cfg.Upstream, "http://env-backend.example.com")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveConfigFile
+// ---------------------------------------------------------------------------
+
+func TestResolveConfigFile(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		env       map[string]string
+		want      string
+	}{
+		{
+			name: "flag takes precedence over env",
+			args: []string{"--config-file", "/from/flag.yaml"},
+			env:  map[string]string{"CONFIG_FILE": "/from/env.yaml"},
+			want: "/from/flag.yaml",
+		},
+		{
+			name: "env used when no flag",
+			args: []string{},
+			env:  map[string]string{"CONFIG_FILE": "/from/env.yaml"},
+			want: "/from/env.yaml",
+		},
+		{
+			name: "empty when neither set",
+			args: []string{},
+			env:  map[string]string{},
+			want: "",
+		},
+		{
+			name: "empty env value is ignored",
+			args: []string{},
+			env:  map[string]string{"CONFIG_FILE": ""},
+			want: "",
+		},
+		{
+			name: "config-file flag can appear anywhere in args",
+			args: []string{"--config-file", "/explicit.yaml"},
+			env:  map[string]string{},
+			want: "/explicit.yaml",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lookupEnv := func(key string) (string, bool) {
+				v, ok := tc.env[key]
+				return v, ok
+			}
+			got := resolveConfigFile(tc.args, lookupEnv)
+			if got != tc.want {
+				t.Errorf("resolveConfigFile() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

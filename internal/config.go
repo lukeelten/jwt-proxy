@@ -5,12 +5,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/ilyakaznacheev/cleanenv"
+	"io"
 	"log"
 	"net/url"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/ilyakaznacheev/cleanenv"
 )
 
 const DEFAULT_CONFIG_FILE_NAME = "config.yaml"
@@ -105,15 +107,26 @@ func LoadConfig() *ProxyConfig {
 }
 
 func configFileName() string {
-	configFile := flag.String("config-file", "", "Name or path of configuration file")
-	flag.Parse()
+	return resolveConfigFile(os.Args[1:], os.LookupEnv)
+}
 
-	// CLI flag takes precedence over the environment variable.
+// resolveConfigFile determines the config file path from CLI args and the
+// environment. It is a pure function with injected dependencies so it can be
+// tested without touching global flag.CommandLine or os.Args.
+//
+// Priority: CLI flag --config-file > CONFIG_FILE env var > empty string.
+func resolveConfigFile(args []string, lookupEnv func(string) (string, bool)) string {
+	fs := flag.NewFlagSet("jwt-proxy", flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // suppress usage output during tests
+	configFile := fs.String("config-file", "", "Name or path of configuration file")
+	// Ignore parse errors (e.g. unknown flags from the test runner).
+	_ = fs.Parse(args)
+
 	if len(*configFile) > 0 {
 		return *configFile
 	}
 
-	if configFileEnv, ok := os.LookupEnv("CONFIG_FILE"); ok {
+	if configFileEnv, ok := lookupEnv("CONFIG_FILE"); ok && len(configFileEnv) > 0 {
 		return configFileEnv
 	}
 
