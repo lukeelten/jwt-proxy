@@ -6,7 +6,7 @@ require (
 	github.com/ilyakaznacheev/cleanenv v1.5.0
 	github.com/labstack/echo-contrib/v5 v5.0.1
 	github.com/labstack/echo/v5 v5.2.1
-	github.com/lestrrat-go/jwx/v2 v2.1.6
+	github.com/lestrrat-go/jwx/v2 v2.1.7
 	golang.org/x/sync v0.21.0
 )
 
