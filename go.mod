@@ -7,7 +7,7 @@ require (
 	github.com/labstack/echo-contrib/v5 v5.0.1
 	github.com/labstack/echo/v5 v5.2.1
 	github.com/lestrrat-go/jwx/v2 v2.1.6
-	golang.org/x/sync v0.21.0
+	golang.org/x/sync v0.23.0
 )
 
 require (
